@@ -1,0 +1,9 @@
+services:
+  telegram-connector:
+    image: ghcr.io/${GITHUB_REPOSITORY:-local/cortex-m-telegram-connector}:latest
+    build: .
+    restart: unless-stopped
+    environment:
+      TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      CORTEX_M_URL: ${CORTEX_M_URL:-http://cortex-m:8080/api/cortex-m/v1}
+      CONNECTOR_ID: ${CONNECTOR_ID:-telegram-1}
