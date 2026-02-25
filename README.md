@@ -1,6 +1,6 @@
 # cortex-m-telegram-connector
 
-A lightweight Telegram bot that bridges [Telegram](https://telegram.org/) to [Cortex-M](https://github.com/workaround-org/cortex-m) using the [Connector Protocol](wiki/Connector-Protocol.md).
+A lightweight Telegram bot that bridges [Telegram](https://telegram.org/) to [Cortex-M](https://github.com/workaround-org/cortex-m) using the [Connector Protocol](https://github.com/workaround-org/cortex-m/wiki/Connector-Protocol).
 
 Users send messages to the Telegram bot; the connector forwards them to Cortex-M over a persistent WebSocket and replies with the assistant's response.
 
@@ -118,4 +118,4 @@ docker pull ghcr.io/workaround-org/cortex-m-telegram:v1.2.3
 
 ## See also
 
-- [Connector Protocol](wiki/Connector-Protocol.md) — WebSocket message format and lifecycle
+- [Connector Protocol](https://github.com/workaround-org/cortex-m/wiki/Connector-Protocol) — WebSocket message format and lifecycle
