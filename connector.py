@@ -43,8 +43,8 @@ if not ALLOWED_USERS:
 # ---------------------------------------------------------------------------
 # Shared state
 # ---------------------------------------------------------------------------
-# conversationId → Future[reply_text]
-_pending: dict[str, asyncio.Future] = {}
+# conversationId → (Future[reply_text], payload_json)
+_pending: dict[str, tuple[asyncio.Future, str]] = {}
 
 # Queue of raw JSON strings to send over the WebSocket
 _send_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -111,7 +111,7 @@ async def _receiver(ws) -> None:
         reply_text: str = data.get("text", "")
 
         if conv_id and conv_id in _pending:
-            fut = _pending.pop(conv_id)
+            fut, _ = _pending.pop(conv_id)
             if not fut.done():
                 fut.set_result(reply_text)
         else:
@@ -129,14 +129,21 @@ async def ws_loop() -> None:
             async with websockets.connect(url) as ws:
                 log.info("WebSocket connected (session=%s)", session_id)
                 backoff = 2  # reset on successful connect
+                # Drain stale queue entries, then re-send any messages that were
+                # pending when the previous connection was lost.  Both operations
+                # are synchronous (no await between them) so no new items can
+                # sneak in between the drain and the re-queue.
+                while not _send_queue.empty():
+                    _send_queue.get_nowait()
+                for conv_id, (fut, payload) in list(_pending.items()):
+                    if not fut.done():
+                        _send_queue.put_nowait(payload)
+                        log.info("Re-queued pending message for conversation %s after reconnect", conv_id)
                 await asyncio.gather(_sender(ws), _receiver(ws))
         except Exception as exc:
             log.error("WebSocket error (%s) — retrying in %ds", exc, backoff)
-            # Fail any pending futures so Telegram users get an error promptly
-            for fut in list(_pending.values()):
-                if not fut.done():
-                    fut.set_exception(RuntimeError("Connection lost"))
-            _pending.clear()
+            # Leave pending futures alive; their messages will be re-sent once
+            # the connection is restored (see re-queue logic above).
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
 
@@ -162,13 +169,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     conversation_id = str(chat_id)
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[str] = loop.create_future()
-    _pending[conversation_id] = fut
 
     payload = _build_inbound_event(
         conversation_id=conversation_id,
         room_id=str(chat_id),
         text=text,
     )
+    _pending[conversation_id] = (fut, payload)
     await _send_queue.put(payload)
     log.info("Queued inbound event for chat %s", chat_id)
 
@@ -179,7 +186,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         except Exception:
             # Fallback to plain text if the response contains malformed Markdown
             await update.message.reply_text(reply)
-    except (asyncio.TimeoutError, RuntimeError) as exc:
+    except asyncio.TimeoutError as exc:
         _pending.pop(conversation_id, None)
         log.warning("No reply for chat %s: %s", chat_id, exc)
         await update.message.reply_text("⏳ Cortex-M did not respond in time. Please try again.")
