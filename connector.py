@@ -32,7 +32,13 @@ log = logging.getLogger(__name__)
 CORTEX_M_URL: str = os.environ["CORTEX_M_URL"].rstrip("/")  # e.g. http://cortex-m:8080/api/cortex-m/v1
 TELEGRAM_TOKEN: str = os.environ["TELEGRAM_TOKEN"]
 CONNECTOR_ID: str = os.environ.get("CONNECTOR_ID", "telegram-1")
+TELEGRAM_ALLOWLIST: str = os.environ.get("TELEGRAM_ALLOWLIST", "")
+ALLOWED_USERS: set[str] = {x.strip() for x in TELEGRAM_ALLOWLIST.split(",") if x.strip()}
 SOURCE: str = f"urn:connector:{CONNECTOR_ID}"
+
+if not ALLOWED_USERS:
+    log.warning("⚠️  WARNING: TELEGRAM_ALLOWLIST is not set — the bot is open to EVERYONE!")
+    log.warning("⚠️  Set TELEGRAM_ALLOWLIST to a comma-separated list of allowed user IDs or usernames.")
 
 # ---------------------------------------------------------------------------
 # Shared state
@@ -145,6 +151,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not text:
         return
 
+    user = update.effective_user
+    if ALLOWED_USERS and (
+        str(user.id) not in ALLOWED_USERS and
+        (not user.username or user.username not in ALLOWED_USERS)
+    ):
+        log.warning("Unauthorized access attempt from user %s (%s)", user.id, user.username)
+        return
+
     conversation_id = str(chat_id)
     loop = asyncio.get_running_loop()
     fut: asyncio.Future[str] = loop.create_future()
@@ -160,7 +174,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     try:
         reply = await asyncio.wait_for(asyncio.shield(fut), timeout=60)
-        await update.message.reply_text(reply)
+        try:
+            await update.message.reply_text(reply, parse_mode="Markdown")
+        except Exception:
+            # Fallback to plain text if the response contains malformed Markdown
+            await update.message.reply_text(reply)
     except (asyncio.TimeoutError, RuntimeError) as exc:
         _pending.pop(conversation_id, None)
         log.warning("No reply for chat %s: %s", chat_id, exc)
