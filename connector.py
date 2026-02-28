@@ -19,6 +19,7 @@ import httpx
 import websockets
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegramify_markdown import markdownify
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -183,9 +184,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         reply = await asyncio.wait_for(asyncio.shield(fut), timeout=CORTEX_M_TIMEOUT)
         try:
-            await update.message.reply_text(reply, parse_mode="Markdown")
+            converted = markdownify(reply)
+            await update.message.reply_text(converted, parse_mode="MarkdownV2")
         except Exception:
-            # Fallback to plain text if the response contains malformed Markdown
+            # Fallback to plain text if Markdown conversion fails
             await update.message.reply_text(reply)
     except asyncio.TimeoutError as exc:
         _pending.pop(conversation_id, None)
