@@ -12,20 +12,140 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
+from html import escape
+from html.parser import HTMLParser
 
 import httpx
 import websockets
+from markdown_it import MarkdownIt
 from telegram import Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
-from telegramify_markdown import markdownify
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     level=logging.INFO,
 )
 log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Markdown → Telegram HTML conversion
+# ---------------------------------------------------------------------------
+_md = MarkdownIt().enable("table")
+
+
+class _TelegramHTMLConverter(HTMLParser):
+    """Converts standard HTML (from markdown-it-py) to Telegram-compatible HTML."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._out: list[str] = []
+        self._stack: list[str] = []
+        # table state
+        self._in_table = False
+        self._table_rows: list[list[str]] = []
+        self._current_row: list[str] = []
+        self._current_cell: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list) -> None:
+        attrs_d = dict(attrs)
+        self._stack.append(tag)
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._out.append("<b>")
+        elif tag in ("strong", "b"):
+            self._out.append("<b>")
+        elif tag in ("em", "i"):
+            self._out.append("<i>")
+        elif tag == "u":
+            self._out.append("<u>")
+        elif tag in ("s", "del", "strike"):
+            self._out.append("<s>")
+        elif tag == "code" and "pre" not in self._stack[:-1]:
+            self._out.append("<code>")
+        elif tag == "pre":
+            self._out.append("<pre>")
+        elif tag == "a" and "href" in attrs_d:
+            self._out.append(f'<a href="{escape(attrs_d["href"])}">')
+        elif tag == "blockquote":
+            self._out.append("<blockquote>")
+        elif tag == "br":
+            self._out.append("\n")
+        elif tag == "table":
+            self._in_table = True
+            self._table_rows = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._stack and self._stack[-1] == tag:
+            self._stack.pop()
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self._out.append("</b>\n\n")
+        elif tag in ("strong", "b"):
+            self._out.append("</b>")
+        elif tag in ("em", "i"):
+            self._out.append("</i>")
+        elif tag == "u":
+            self._out.append("</u>")
+        elif tag in ("s", "del", "strike"):
+            self._out.append("</s>")
+        elif tag == "code" and "pre" not in self._stack:
+            self._out.append("</code>")
+        elif tag == "pre":
+            self._out.append("</pre>\n")
+        elif tag == "a":
+            self._out.append("</a>")
+        elif tag == "blockquote":
+            self._out.append("</blockquote>\n")
+        elif tag == "p":
+            self._out.append("\n\n")
+        elif tag in ("th", "td"):
+            self._current_row.append("".join(self._current_cell).strip())
+            self._current_cell = []
+        elif tag == "tr":
+            self._table_rows.append(self._current_row)
+            self._current_row = []
+        elif tag == "table":
+            self._in_table = False
+            self._out.append(self._render_table())
+
+    def handle_data(self, data: str) -> None:
+        if self._in_table and self._stack and self._stack[-1] in ("th", "td"):
+            self._current_cell.append(escape(data))
+        elif not self._in_table:
+            self._out.append(escape(data))
+
+    def _render_table(self) -> str:
+        if not self._table_rows:
+            return ""
+        col_widths: list[int] = []
+        for row in self._table_rows:
+            for i, cell in enumerate(row):
+                w = len(cell)
+                if i >= len(col_widths):
+                    col_widths.append(w)
+                else:
+                    col_widths[i] = max(col_widths[i], w)
+        lines: list[str] = []
+        for ri, row in enumerate(self._table_rows):
+            cells = [cell.ljust(col_widths[i]) if i < len(col_widths) else cell for i, cell in enumerate(row)]
+            lines.append("| " + " | ".join(cells) + " |")
+            if ri == 0:
+                sep = "-+-".join("-" * w for w in col_widths)
+                lines.append(f"|-{sep}-|")
+        return "<pre>" + escape("\n".join(lines)) + "</pre>\n\n"
+
+    def result(self) -> str:
+        text = "".join(self._out)
+        return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def _md_to_telegram_html(text: str) -> str:
+    """Convert Markdown to Telegram-compatible HTML."""
+    html = _md.render(text)
+    converter = _TelegramHTMLConverter()
+    converter.feed(html)
+    return converter.result()
 
 # ---------------------------------------------------------------------------
 # Configuration (from environment)
@@ -184,10 +304,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         reply = await asyncio.wait_for(asyncio.shield(fut), timeout=CORTEX_M_TIMEOUT)
         try:
-            converted = markdownify(reply)
-            await update.message.reply_text(converted, parse_mode="MarkdownV2")
-        except Exception:
-            # Fallback to plain text if Markdown conversion fails
+            html = _md_to_telegram_html(reply)
+            await update.message.reply_text(html, parse_mode="HTML")
+        except Exception as exc:
+            log.warning("Failed to send HTML reply, falling back to plain text: %s", exc)
             await update.message.reply_text(reply)
     except asyncio.TimeoutError as exc:
         _pending.pop(conversation_id, None)
