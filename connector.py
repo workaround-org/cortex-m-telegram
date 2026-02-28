@@ -21,7 +21,7 @@ from html.parser import HTMLParser
 import httpx
 import websockets
 from markdown_it import MarkdownIt
-from telegram import Update
+from telegram import Bot, Update
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 logging.basicConfig(
@@ -171,6 +171,12 @@ _pending: dict[str, tuple[asyncio.Future, str]] = {}
 # Queue of raw JSON strings to send over the WebSocket
 _send_queue: asyncio.Queue[str] = asyncio.Queue()
 
+# Telegram bot instance (set in main) used for broadcast messages
+_bot: Bot | None = None
+
+# Set of chat IDs that have interacted with the bot (used for broadcast)
+_known_chats: set[int] = set()
+
 
 # ---------------------------------------------------------------------------
 # Cortex-M WebSocket helpers
@@ -236,6 +242,17 @@ async def _receiver(ws) -> None:
             fut, _ = _pending.pop(conv_id)
             if not fut.done():
                 fut.set_result(reply_text)
+        elif conv_id == "broadcast" and _bot is not None:
+            log.info("Broadcasting message to %d known chat(s)", len(_known_chats))
+            html = _md_to_telegram_html(reply_text)
+            for cid in list(_known_chats):
+                try:
+                    await _bot.send_message(cid, html, parse_mode="HTML")
+                except Exception:
+                    try:
+                        await _bot.send_message(cid, reply_text)
+                    except Exception as exc:
+                        log.warning("Failed to broadcast to chat %s: %s", cid, exc)
         else:
             log.warning("Received reply for unknown conversationId: %s", conv_id)
 
@@ -276,6 +293,7 @@ async def ws_loop() -> None:
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = update.effective_chat.id
+    _known_chats.add(chat_id)
     text = (update.message.text or "").strip()
     if not text:
         return
@@ -320,10 +338,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
+    global _bot
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     async with app:
+        _bot = app.bot
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
         log.info("Telegram bot polling started")
