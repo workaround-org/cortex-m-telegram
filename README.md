@@ -50,6 +50,7 @@ All configuration is via environment variables.
 | `TELEGRAM_ALLOWLIST` | ❌ | — | Comma-separated list of allowed user IDs or usernames (empty = allow all) |
 | `CORTEX_M_URL` | ✅ | — | Base URL of the Cortex-M API, e.g. `http://cortex-m:8080/api/cortex-m/v1` |
 | `CONNECTOR_ID` | ❌ | `telegram-1` | Stable identifier for this connector instance (appears in CloudEvents `source`) |
+| `CORTEX_M_TIMEOUT` | ❌ | `180` | Seconds to wait for a Cortex-M reply before giving up (default: 3 minutes) |
 
 ---
 

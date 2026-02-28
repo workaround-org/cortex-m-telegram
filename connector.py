@@ -34,6 +34,7 @@ TELEGRAM_TOKEN: str = os.environ["TELEGRAM_TOKEN"]
 CONNECTOR_ID: str = os.environ.get("CONNECTOR_ID", "telegram-1")
 TELEGRAM_ALLOWLIST: str = os.environ.get("TELEGRAM_ALLOWLIST", "")
 ALLOWED_USERS: set[str] = {x.strip() for x in TELEGRAM_ALLOWLIST.split(",") if x.strip()}
+CORTEX_M_TIMEOUT: int = int(os.environ.get("CORTEX_M_TIMEOUT", "180"))  # seconds; default 3 min
 SOURCE: str = f"urn:connector:{CONNECTOR_ID}"
 
 if not ALLOWED_USERS:
@@ -180,7 +181,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     log.info("Queued inbound event for chat %s", chat_id)
 
     try:
-        reply = await asyncio.wait_for(asyncio.shield(fut), timeout=60)
+        reply = await asyncio.wait_for(asyncio.shield(fut), timeout=CORTEX_M_TIMEOUT)
         try:
             await update.message.reply_text(reply, parse_mode="Markdown")
         except Exception:
